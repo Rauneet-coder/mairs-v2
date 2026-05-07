@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fine-tune Llama 3.1 8B with Unsloth + LoRA on ROCm."""
+"""Fine-tune Llama 3.1 8B with Hugging Face + PEFT LoRA on ROCm."""
 
 from __future__ import annotations
 
@@ -8,9 +8,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 from datasets import load_dataset
-from transformers import TrainerCallback, TrainingArguments
+from peft import LoraConfig, get_peft_model
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TrainerCallback,
+    TrainingArguments,
+)
 from trl import SFTTrainer
-from unsloth import FastLanguageModel
 
 
 class EpochMetricsPrinter(TrainerCallback):
@@ -66,14 +71,21 @@ def main() -> None:
             "Run fine_tuning/prepare_dataset.py first."
         )
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name="unsloth/Meta-Llama-3.1-8B-Instruct",
-        max_seq_length=2048,
-        load_in_4bit=True,
-    )
+    model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-    model = FastLanguageModel.get_peft_model(
-        model,
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype="auto",
+        device_map="auto",
+    )
+    model.config.use_cache = False
+    model.gradient_checkpointing_enable()
+
+    lora_config = LoraConfig(
+        task_type="CAUSAL_LM",
         r=16,
         lora_alpha=16,
         target_modules=[
@@ -87,9 +99,8 @@ def main() -> None:
         ],
         lora_dropout=0,
         bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=42,
     )
+    model = get_peft_model(model, lora_config)
 
     dataset = load_dataset(
         "json",
