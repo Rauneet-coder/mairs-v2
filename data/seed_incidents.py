@@ -173,9 +173,12 @@ def main() -> None:
 
     chroma_dir = root / "data" / "chroma"
     client = chromadb.PersistentClient(path=str(chroma_dir))
-    collection = client.get_or_create_collection(name="incidents")
+    try:
+        client.delete_collection("incidents")
+    except:
+        pass
 
-    collection.delete(where={})
+    collection = client.create_collection("incidents")
     collection.add(
         ids=[str(uuid4()) for _ in incidents],
         documents=[
