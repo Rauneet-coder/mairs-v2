@@ -71,7 +71,7 @@ def main() -> None:
             "Run fine_tuning/prepare_dataset.py first."
         )
 
-    model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    model_name = "Qwen/Qwen2.5-7B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
