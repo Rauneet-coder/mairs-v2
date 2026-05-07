@@ -22,7 +22,7 @@ services:
   # Fake service metrics generator
   mock-exporter:
     image: python:3.11-slim
-    command: python /app/mock_exporter.py
+    command: sh -c "pip install prometheus_client && python /app/mock_exporter.py"
     volumes: ["./mock_exporter.py:/app/mock_exporter.py"]
     ports: ["9200:9200"]
 
