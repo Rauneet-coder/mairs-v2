@@ -78,7 +78,7 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype="auto",
+        dtype="auto",
         device_map="auto",
     )
     model.config.use_cache = False
@@ -127,7 +127,7 @@ def main() -> None:
         fp16=True,
         bf16=False,
         logging_strategy="epoch",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         report_to="none",
         seed=42,
