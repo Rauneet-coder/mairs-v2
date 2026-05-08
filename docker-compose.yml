@@ -1,0 +1,33 @@
+version: '3.8'
+services:
+  backend:
+    build: .
+    ports: ["8002:8002"]
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL_FAST=${LLM_MODEL_FAST}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - PROMETHEUS_URL=http://prometheus:9090
+      - CHROMA_PATH=/app/data/chroma_db
+    volumes:
+      - ./data:/app/data
+    depends_on: [prometheus]
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8002
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports: ["9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3000:3000"]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=mairs2025
+
+  mock-exporter:
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile.exporter
+    ports: ["9200:9200","9201:9201"]
