@@ -3,7 +3,11 @@ import os
 import random
 import uuid
 from datetime import datetime
+
+# pyrefly: ignore [missing-import]
 from chromadb import PersistentClient
+
+# pyrefly: ignore [missing-import]
 from sentence_transformers import SentenceTransformer
 
 SERVICES = [
