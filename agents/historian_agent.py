@@ -8,7 +8,7 @@ class HistorianAgent:
     def __init__(self, chroma_path: str = None):
         path = chroma_path or os.getenv("CHROMA_PATH", "./data/chroma_db")
         self.client = chromadb.PersistentClient(path=path)
-        self.collection = self.client.get_collection("incidents")
+        self.collection = self.client.get_or_create_collection("incidents")
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
     async def search(self, alert: AlertEvent, top_k: int = 5) -> list[HistoricalMatch]:
