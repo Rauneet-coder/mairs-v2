@@ -39,7 +39,7 @@ export default function IncidentDetails({ pipelineData }) {
             <div className="bg-slate-950/40 p-4 rounded-lg border border-slate-850">
               <div className="text-xs text-slate-400 font-medium mb-1">Root Cause Category</div>
               <div className="text-sm font-semibold text-white capitalize">
-                {rca_result.root_cause_category.replace("_", " ")}
+                {rca_result.root_cause_category.replace(/_/g, " ")}
               </div>
               {rca_result.similar_incident_ref && (
                 <div className="text-xs text-purple-400 mt-2 font-mono">
@@ -135,7 +135,7 @@ export default function IncidentDetails({ pipelineData }) {
                     <div className="text-xs text-slate-500 font-mono">{step.duration_minutes}m duration</div>
                     {healerAction && (
                       <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
-                        healerAction.status === "success" 
+                        healerAction.status === "success"
                           ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
                           : healerAction.status === "skipped"
                           ? "bg-amber-500/10 text-amber-400 border-amber-500/20"

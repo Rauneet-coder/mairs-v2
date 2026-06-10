@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import AgentLiveFeed from "./components/AgentLiveFeed";
 import IncidentDetails from "./components/IncidentDetails";
 import CapacityPlanning from "./components/CapacityPlanning";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = "http://localhost:8002";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("incidents");
@@ -13,30 +13,29 @@ export default function App() {
   const [agentEvents, setAgentEvents] = useState({});
   const [capacityData, setCapacityData] = useState(null);
   const [isSimulating, setIsSimulating] = useState(null);
-  
+
   const wsRef = useRef(null);
 
   // Fetch incidents list
-  const fetchIncidents = async () => {
+  const fetchIncidents = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/incidents?limit=15`);
       const data = await res.json();
       if (data && data.metadatas) {
-        // Parse metadata objects back from flat string values if needed
         const list = data.metadatas.map((m, idx) => ({
           id: data.ids[idx],
           ...m,
-          resolution_steps: typeof m.resolution_steps === "string" ? JSON.parse(m.resolution_steps) : m.resolution_steps
+          resolution_steps: typeof m.resolution_steps === "string" ? safeParseJSON(m.resolution_steps) : m.resolution_steps
         }));
         setIncidents(list);
       }
     } catch (err) {
       console.error("Error fetching incidents:", err);
     }
-  };
+  }, []);
 
   // Fetch capacity forecasts
-  const fetchCapacity = async () => {
+  const fetchCapacity = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/capacity`);
       const data = await res.json();
@@ -44,7 +43,7 @@ export default function App() {
     } catch (err) {
       console.error("Error fetching capacity:", err);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchIncidents();
@@ -54,20 +53,21 @@ export default function App() {
       fetchCapacity();
     }, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchIncidents, fetchCapacity]);
 
   // Handle WebSocket Connection
   useEffect(() => {
     if (!activePipelineId) return;
 
-    if (wsRef.current) {
-      wsRef.current.close();
+    const oldWs = wsRef.current;
+    if (oldWs) {
+      oldWs.close();
     }
 
     setAgentEvents({});
-    
+
     // Connect to backend websocket endpoint
-    const ws = new WebSocket(`ws://localhost:8000/ws/pipeline/${activePipelineId}`);
+    const ws = new WebSocket(`ws://localhost:8002/ws/pipeline/${activePipelineId}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -78,12 +78,12 @@ export default function App() {
       try {
         const payload = JSON.parse(event.data);
         console.log("WS Event received:", payload);
-        
+
         setAgentEvents((prev) => ({
           ...prev,
           [payload.agent]: payload
         }));
-        
+
         // Poll backend to get the latest updated pipeline state
         fetchPipelineDetails(activePipelineId);
       } catch (err) {
@@ -100,7 +100,7 @@ export default function App() {
     };
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      ws.close();
     };
   }, [activePipelineId]);
 
@@ -120,11 +120,6 @@ export default function App() {
   const triggerMockIncident = async (profileType) => {
     setIsSimulating(profileType);
     try {
-      const profilePayload = {
-        metrics: {}
-      };
-      
-      // Hit trigger alert
       const res = await fetch(`${API_BASE}/api/alert`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -137,8 +132,8 @@ export default function App() {
             service_up: profileType === "out_of_memory" ? 0.0 : 1.0,
             service: profileType === "database_timeout" ? "database-primary" : profileType === "out_of_memory" ? "cache-layer" : "payments-api",
             component: profileType === "database_timeout" ? "connection-pool" : profileType === "out_of_memory" ? "redis-cluster" : "transaction-logger",
-            anomaly: profileType === "database_timeout" ? "Write pool connection limit reached. Stripe checkout transactions timed out." 
-                     : profileType === "out_of_memory" ? "Out of memory. Eviction policy failed." 
+            anomaly: profileType === "database_timeout" ? "Write pool connection limit reached. Stripe checkout transactions timed out."
+                     : profileType === "out_of_memory" ? "Out of memory. Eviction policy failed."
                      : "High CPU utilization spike during billing worker processing queue."
           }
         })
@@ -157,6 +152,14 @@ export default function App() {
     }
   };
 
+  function safeParseJSON(str) {
+    try {
+      return JSON.parse(str);
+    } catch {
+      return str;
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#0b0c10] text-slate-100 flex flex-col font-sans">
       {/* Header */}
@@ -171,12 +174,12 @@ export default function App() {
               <span className="text-[10px] text-purple-400 font-mono">Multi-Agent Incident Response System</span>
             </div>
           </div>
-          
+
           <nav className="flex gap-1 bg-slate-950 p-1 rounded-lg border border-slate-900">
             <button
               onClick={() => setActiveTab("incidents")}
               className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 ${
-                activeTab === "incidents" 
+                activeTab === "incidents"
                   ? "bg-purple-600 text-white shadow-md"
                   : "text-slate-400 hover:text-slate-200"
               }`}
@@ -186,7 +189,7 @@ export default function App() {
             <button
               onClick={() => setActiveTab("capacity")}
               className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 ${
-                activeTab === "capacity" 
+                activeTab === "capacity"
                   ? "bg-purple-600 text-white shadow-md"
                   : "text-slate-400 hover:text-slate-200"
               }`}
@@ -199,7 +202,7 @@ export default function App() {
 
       {/* Main Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
+
         {/* Left Side: Simulation Controls & Seeding status */}
         <section className="lg:col-span-4 space-y-6">
           <div className="bg-[#0f1118]/80 backdrop-blur-md border border-slate-900 rounded-xl p-5 shadow-lg">
@@ -229,7 +232,7 @@ export default function App() {
               <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-1">🎯 Inject Simulated Failure</h2>
               <p className="text-[11px] text-slate-400">Trigger full LangGraph multi-agent remediation workspace.</p>
             </div>
-            
+
             <div className="space-y-2.5 pt-2">
               <button
                 onClick={() => triggerMockIncident("database_timeout")}
@@ -290,12 +293,12 @@ export default function App() {
         <section className="lg:col-span-8">
           {activeTab === "incidents" ? (
             <div className="space-y-6">
-              
+
               {/* Agent live thought feed */}
               {activePipelineId ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <AgentLiveFeed events={agentEvents} activeAgent={null} />
+                    <AgentLiveFeed events={agentEvents} />
                   </div>
                   <div>
                     <IncidentDetails pipelineData={pipelineData} />
@@ -317,7 +320,7 @@ export default function App() {
             </div>
           )}
         </section>
-        
+
       </main>
 
       {/* Footer */}

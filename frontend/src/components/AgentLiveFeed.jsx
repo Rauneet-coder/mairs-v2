@@ -9,7 +9,7 @@ const AGENT_META = {
   notifier: { name: "Notifier Agent", icon: "📢", desc: "Dispatching alerts & annotating dashboards" }
 };
 
-export default function AgentLiveFeed({ events, activeAgent }) {
+export default function AgentLiveFeed({ events }) {
   return (
     <div className="bg-slate-900/50 backdrop-blur-md border border-slate-800 rounded-xl p-6 shadow-2xl">
       <div className="flex items-center justify-between mb-6">
@@ -24,10 +24,10 @@ export default function AgentLiveFeed({ events, activeAgent }) {
         {Object.entries(AGENT_META).map(([key, meta]) => {
           const status = events[key]?.status || "idle";
           const data = events[key]?.data;
-          
+
           let statusColor = "border-slate-800 bg-slate-950 text-slate-500";
           let pulseEffect = "";
-          
+
           if (status === "running") {
             statusColor = "border-purple-500 bg-purple-950/30 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.4)]";
             pulseEffect = "animate-pulse";
@@ -46,7 +46,7 @@ export default function AgentLiveFeed({ events, activeAgent }) {
 
               {/* Node Content */}
               <div className={`p-4 rounded-lg border transition-all duration-300 ${
-                status === "running" 
+                status === "running"
                   ? "bg-purple-950/10 border-purple-500/30 shadow-lg"
                   : status === "done"
                   ? "bg-slate-900/30 border-slate-800/80"
@@ -65,7 +65,7 @@ export default function AgentLiveFeed({ events, activeAgent }) {
                     {status}
                   </span>
                 </div>
-                
+
                 <p className="text-sm text-slate-400 mb-2">{meta.desc}</p>
 
                 {/* Streamed Agent Output */}
