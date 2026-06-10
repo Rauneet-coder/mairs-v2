@@ -21,7 +21,7 @@ HEALING_REGISTRY = {
     },
     "scale_up_pods": {
         "safe_for": [Severity.WARNING],
-        "dry_run": lambda target: f"kubectl scale deployment/{target} --replicas=+2"
+        "dry_run": lambda target: f"kubectl scale deployment/{target} --replicas=5"
     }
 }
 
