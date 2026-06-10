@@ -6,28 +6,53 @@ services:
     environment:
       - LLM_BASE_URL=${LLM_BASE_URL}
       - LLM_MODEL_FAST=${LLM_MODEL_FAST}
+      - LLM_MODEL_FINETUNED=${LLM_MODEL_FINETUNED}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - GRAFANA_URL=${GRAFANA_URL:-http://grafana:3000}
+      - GRAFANA_API_KEY=${GRAFANA_API_KEY}
       - PROMETHEUS_URL=http://prometheus:9090
       - CHROMA_PATH=/app/data/chroma_db
     volumes:
       - ./data:/app/data
-    depends_on: [prometheus]
+    depends_on:
+      prometheus:
+        condition: service_healthy
     command: uvicorn api.main:app --host 0.0.0.0 --port 8002
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.0
     ports: ["9090:9090"]
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.2.0
     ports: ["3000:3000"]
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=mairs2025
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-mairs2025}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    ports: ["9100:9100"]
 
   mock-exporter:
-    build:
-      context: .
-      dockerfile: monitoring/Dockerfile.exporter
-    ports: ["9200:9200","9201:9201"]
+    image: python:3.11-slim
+    command: sh -c "pip install prometheus_client && python /app/monitoring/mock_exporter.py"
+    volumes:
+      - ./monitoring/mock_exporter.py:/app/monitoring/mock_exporter.py
+    ports:
+      - "9200:9200"
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-data:
