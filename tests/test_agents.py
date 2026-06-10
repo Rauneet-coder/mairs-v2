@@ -6,7 +6,7 @@ import argparse
 import json
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -38,7 +38,7 @@ class MockLLMChatCompletions:
                 self.choices = [MockChoice(content)]
 
         sys_prompt = messages[0]["content"] if messages else ""
-        
+
         if "monitoring" in sys_prompt or "Analyze incoming system metrics" in sys_prompt:
             # Monitor agent mock
             content = json.dumps({
@@ -53,7 +53,7 @@ class MockLLMChatCompletions:
             content = json.dumps({
                 "trigger": {
                     "description": "Stripe API timeouts causing write pool saturation",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "evidence": "error_rate_percent = 12.5%"
                 },
                 "propagation": [
@@ -76,7 +76,7 @@ class MockLLMChatCompletions:
                     {
                         "step": 1,
                         "action": "Check database connection pool utilization",
-                        "command": "psql -c 'SELECT count(*) FROM pg_stat_activity;'",
+                        "command": "psql -c 'SELECT count(*) FROM pg_stat_activity;\"'",
                         "duration_minutes": 1,
                         "historical_ref": "INC-2024-001",
                         "auto_executable": False
@@ -103,7 +103,7 @@ class MockLLMChatCompletions:
             })
         else:
             content = "{}"
-        
+
         return MockResponse(content)
 
 class MockChat:
@@ -118,12 +118,12 @@ class MockLLM:
 
 async def run_test(alert_text: str, mock_llm: bool):
     print(f"\n🚀 Starting Agent Pipeline Test with alert concept: '{alert_text}'")
-    
+
     load_dotenv()
-    
+
     # Initialize Prometheus Client with dummy base URL
     prom_client = PrometheusClient(base_url="http://localhost:9090")
-    
+
     # Check if we should use Mock LLM or live client
     llm_url = os.getenv("LLM_BASE_URL")
     if mock_llm or not llm_url:
@@ -134,10 +134,10 @@ async def run_test(alert_text: str, mock_llm: bool):
         print(f"📡 Using LIVE LLM Endpoint at: {llm_url}")
         fast_llm = AsyncOpenAI(base_url=llm_url, api_key="na")
         smart_llm = AsyncOpenAI(base_url=os.getenv("LLM_BASE_URL_FINETUNED") or llm_url, api_key="na")
-        
+
     fast_model = os.getenv("LLM_MODEL_FAST", "qwen2.5-coder:32b")
     smart_model = os.getenv("LLM_MODEL_FINETUNED", fast_model)
-    
+
     # Create agents
     monitor = MonitorAgent(fast_llm, fast_model)
     historian = HistorianAgent()
@@ -146,19 +146,19 @@ async def run_test(alert_text: str, mock_llm: bool):
     healer = AutoHealerAgent(dry_run=True)
     capacity = CapacityPlannerAgent(smart_llm, smart_model)
     notifier = NotifierAgent()
-    
+
     # Custom WebSocket Broadcast logger
     class MockWSManager:
         async def broadcast(self, pipeline_id: str, event):
             print(f"📡 [WS STREAM] Agent: {event.agent.upper()} | Status: {event.status.upper()} | Data: {event.data}")
-            
+
     ws_manager = MockWSManager()
-    
+
     # Create compiled StateGraph
     compiled_pipeline = create_pipeline(
         monitor, historian, rca, resolver, healer, capacity, notifier, ws_manager, prom_client
     )
-    
+
     # Raw mock metrics simulating the triggered alert
     mock_metrics = {
         "error_rate_percent": 12.5,
@@ -170,7 +170,7 @@ async def run_test(alert_text: str, mock_llm: bool):
         "component": "connection-pool",
         "anomaly": alert_text
     }
-    
+
     state: PipelineState = {
         "raw_metrics": mock_metrics,
         "alert_event": None,
@@ -183,11 +183,11 @@ async def run_test(alert_text: str, mock_llm: bool):
         "pipeline_start_time": time.time(),
         "error": None
     }
-    
+
     print("\n--- Pipeline Node Execution Logs ---")
     result = await compiled_pipeline.ainvoke(state)
     print("------------------------------------\n")
-    
+
     print("✅ Pipeline Completed!")
     print(f"⏱️  TTR Elapsed: {round(time.time() - state['pipeline_start_time'], 3)}s")
     if result.get("error"):
@@ -198,13 +198,13 @@ async def run_test(alert_text: str, mock_llm: bool):
             print(f"  - Category: {result['rca_result'].root_cause_category}")
             print(f"  - Trigger: {result['rca_result'].trigger.get('description')}")
             print(f"  - Confidence: {result['rca_result'].confidence * 100}%")
-        
+
         print("\n🛠️  Generated Remediation Runbook:")
         if result["runbook"]:
             print(f"  - Est. TTR: {result['runbook'].estimated_resolution_minutes} minutes")
             for step in result["runbook"].steps:
                 print(f"    Step {step.step}: {step.action} (CMD: {step.command}) [Auto-Exec: {step.auto_executable}]")
-        
+
         print("\n🏥 Auto-Healing Actions Executed (Dry-Run):")
         if result["healing_result"]:
             print(f"  - Succeeded: {result['healing_result'].actions_succeeded} | Failed: {result['healing_result'].actions_failed}")
@@ -217,5 +217,5 @@ if __name__ == "__main__":
     parser.add_argument("--mock-alert", type=str, default="High CPU Usage on Database", help="Mock alert name")
     parser.add_argument("--mock-llm", action="store_true", default=True, help="Force mock LLM outputs")
     args = parser.parse_args()
-    
+
     asyncio.run(run_test(args.mock_alert, args.mock_llm))
