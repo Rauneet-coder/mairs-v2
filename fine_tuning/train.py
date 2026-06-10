@@ -79,7 +79,7 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        dtype="auto",
+        torch_dtype="auto",
         device_map="auto",
     )
     model.config.use_cache = False
