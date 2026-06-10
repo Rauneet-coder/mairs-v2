@@ -2,7 +2,9 @@ import asyncio
 import time
 import uuid
 import os
-from datetime import datetime
+import json
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
@@ -18,23 +20,28 @@ from agents.auto_healer_agent import AutoHealerAgent
 from agents.capacity_planner_agent import CapacityPlannerAgent
 from agents.notifier_agent import NotifierAgent
 from agents.pipeline import create_pipeline
-from integrations.prometheus_client import PrometheusClient # Assuming this exists or mocked
+from integrations.prometheus_client import PrometheusClient
 
 load_dotenv()
 
-app = FastAPI(title="MAIRS v2 API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ── Mock response classes (defined once at module level) ───────────────────────
+class _MockChoiceMessage:
+    def __init__(self, content: str):
+        self.content = content
 
-# LLM Config
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:4000/v1")
-LLM_BASE_URL_FINETUNED = os.getenv("LLM_BASE_URL_FINETUNED")
 
+class _MockChoice:
+    def __init__(self, content: str):
+        self.message = _MockChoiceMessage(content)
+
+
+class _MockResponse:
+    def __init__(self, content: str):
+        self.choices = [_MockChoice(content)]
+
+
+# ── Resilient LLM wrapper ────────────────────────────────────────────────────
 class ResilientChatCompletions:
     def __init__(self, live_completions, mode):
         self.live_completions = live_completions
@@ -51,29 +58,16 @@ class ResilientChatCompletions:
             )
         except Exception as exc:
             print(f"⚠️ LLM call failed ({exc}), falling back to simulated SRE intelligence.")
-            
-            class MockChoiceMessage:
-                def __init__(self, content):
-                    self.content = content
-            class MockChoice:
-                def __init__(self, content):
-                    self.message = MockChoiceMessage(content)
-            class MockResponse:
-                def __init__(self, content):
-                    self.choices = [MockChoice(content)]
 
             sys_prompt = messages[0]["content"] if messages else ""
             user_prompt = messages[1]["content"] if len(messages) > 1 else ""
-
-            import json
-            from datetime import datetime
 
             if "monitoring" in sys_prompt or "Analyze incoming system metrics" in sys_prompt:
                 service = "database-primary"
                 component = "connection-pool"
                 anomaly = "Spike in errors detected"
                 severity = "CRITICAL"
-                
+
                 try:
                     metrics = json.loads(user_prompt)
                     service = metrics.get("service", service)
@@ -85,7 +79,7 @@ class ResilientChatCompletions:
                         severity = "WARNING"
                     else:
                         severity = "NORMAL"
-                except:
+                except (json.JSONDecodeError, TypeError):
                     pass
 
                 content = json.dumps({
@@ -99,7 +93,7 @@ class ResilientChatCompletions:
                 content = json.dumps({
                     "trigger": {
                         "description": "Database query buffer saturation due to large transaction logging writes",
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                         "evidence": "latency_p99_ms = 3200ms"
                     },
                     "propagation": [
@@ -121,7 +115,7 @@ class ResilientChatCompletions:
                         {
                             "step": 1,
                             "action": "Check database write-buffer stats and CPU load",
-                            "command": "psql -c 'SELECT * FROM pg_stat_activity WHERE state != \"idle\";'",
+                            "command": "psql -c 'SELECT * FROM pg_stat_activity WHERE state != \"idle\";\"'",
                             "duration_minutes": 2,
                             "historical_ref": "INC-2024-034",
                             "auto_executable": False
@@ -146,18 +140,25 @@ class ResilientChatCompletions:
                     "confidence": 0.88
                 })
             else:
-                content = "{}"
+                content = json.dumps({"status": "unknown_prompt", "message": "No fallback available for this prompt type"})
 
-            return MockResponse(content)
+            return _MockResponse(content)
+
 
 class ResilientChat:
     def __init__(self, live_chat, mode):
         self.completions = ResilientChatCompletions(live_chat.completions, mode)
 
+
 class ResilientLLM:
     def __init__(self, live_client, mode):
         self.live_client = live_client
         self.chat = ResilientChat(live_client.chat, mode)
+
+
+# ── LLM config ─────────────────────────────────────────────────────────────────
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:4000/v1")
+LLM_BASE_URL_FINETUNED = os.getenv("LLM_BASE_URL_FINETUNED")
 
 live_fast_llm = AsyncOpenAI(base_url=LLM_BASE_URL, api_key="na")
 live_smart_llm = AsyncOpenAI(base_url=LLM_BASE_URL_FINETUNED or LLM_BASE_URL, api_key="na")
@@ -166,11 +167,10 @@ smart_llm = ResilientLLM(live_smart_llm, "smart")
 fast_model = os.getenv("LLM_MODEL_FAST", "qwen2.5-coder:32b")
 smart_model = os.getenv("LLM_MODEL_FINETUNED", fast_model)
 
-# Managers
+# ── Managers & Agents ──────────────────────────────────────────────────────────
 ws_manager = ConnectionManager()
 prometheus = PrometheusClient(base_url=os.getenv("PROMETHEUS_URL", "http://localhost:9090"))
 
-# Agents
 monitor = MonitorAgent(fast_llm, fast_model)
 historian = HistorianAgent()
 rca = RCAAgent(smart_llm, smart_model)
@@ -179,11 +179,59 @@ healer = AutoHealerAgent(dry_run=True)
 capacity = CapacityPlannerAgent(smart_llm, smart_model)
 notifier = NotifierAgent()
 
-# Pipeline
 compiled_pipeline = create_pipeline(monitor, historian, rca, resolver, healer, capacity, notifier, ws_manager, prometheus)
 
 pipeline_store: dict[str, dict] = {}
-app.state.latest_forecast = {"forecasts": []}
+
+# ── Lifespan (replaces deprecated on_event) ────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    app.state.latest_forecast = {"forecasts": []}
+    app.state._bg_tasks = set()
+
+    def _log_task_exception(t: asyncio.Task):
+        app.state._bg_tasks.discard(t)
+        exc = t.exception()
+        if exc is not None and not isinstance(exc, asyncio.CancelledError):
+            print(f"[Lifespan] Background task failed: {exc}")
+
+    t1 = asyncio.create_task(monitor.start_polling(prometheus, lambda m: run_pipeline(m, str(uuid.uuid4()))))
+    t2 = asyncio.create_task(capacity_loop())
+    app.state._bg_tasks.add(t1)
+    app.state._bg_tasks.add(t2)
+    t1.add_done_callback(_log_task_exception)
+    t2.add_done_callback(_log_task_exception)
+
+    yield
+
+    # Shutdown: cancel background tasks
+    for t in app.state._bg_tasks:
+        t.cancel()
+    await asyncio.gather(*app.state._bg_tasks, return_exceptions=True)
+
+
+app = FastAPI(title="MAIRS v2 API", lifespan=lifespan)
+
+# Restrict CORS to the frontend origin in production; allow localhost for dev
+origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+async def capacity_loop():
+    while True:
+        try:
+            report = await capacity.run_forecast(prometheus)
+            app.state.latest_forecast = report.model_dump()
+        except Exception as e:
+            print(f"Capacity forecast error: {e}")
+        await asyncio.sleep(6 * 3600)  # 6 hours
+
 
 async def run_pipeline(metrics: dict, pipeline_id: str):
     state: PipelineState = {
@@ -198,39 +246,43 @@ async def run_pipeline(metrics: dict, pipeline_id: str):
         "pipeline_start_time": time.time(),
         "error": None
     }
-    
+
     result = await compiled_pipeline.ainvoke(state)
     result["elapsed_seconds"] = round(time.time() - state["pipeline_start_time"], 2)
-    pipeline_store[pipeline_id] = result
+    # Ensure everything is JSON-serializable before storing
+    pipeline_store[pipeline_id] = _serialize_state(result)
 
-async def capacity_loop():
-    while True:
-        try:
-            report = await capacity.run_forecast(prometheus)
-            app.state.latest_forecast = report.model_dump()
-        except Exception as e:
-            print(f"Capacity forecast error: {e}")
-        await asyncio.sleep(6 * 3600) # 6 hours
 
-@app.on_event("startup")
-async def startup_event():
-    # Start monitor polling
-    asyncio.create_task(monitor.start_polling(prometheus, lambda m: run_pipeline(m, str(uuid.uuid4()))))
-    # Start capacity planning
-    asyncio.create_task(capacity_loop())
+def _serialize_state(state: dict) -> dict:
+    """Recursively convert Pydantic models in the state dict to plain dicts."""
+    from pydantic import BaseModel
+    out = {}
+    for k, v in state.items():
+        if isinstance(v, BaseModel):
+            out[k] = v.model_dump(mode="json")
+        elif isinstance(v, list):
+            out[k] = [_serialize_state(item) if isinstance(item, dict) else item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in v]
+        elif isinstance(v, dict):
+            out[k] = _serialize_state(v)
+        else:
+            out[k] = v
+    return out
+
 
 @app.get("/api/health")
 async def health():
     count = 0
     try:
         count = historian.collection.count()
-    except: pass
+    except Exception:
+        pass
     return {
         "status": "ok",
         "model": fast_model,
         "timestamp": time.time(),
         "chroma_incidents": count
     }
+
 
 @app.post("/api/webhook")
 @app.post("/api/alert")
@@ -240,23 +292,27 @@ async def trigger_alert(payload: dict, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_pipeline, metrics, pipeline_id)
     return {"pipeline_id": pipeline_id, "status": "running"}
 
+
 @app.get("/api/pipeline/{pipeline_id}")
 async def get_pipeline(pipeline_id: str):
     if pipeline_id in pipeline_store:
         return pipeline_store[pipeline_id]
     return {"status": "running", "pipeline_id": pipeline_id}
 
+
 @app.get("/api/incidents")
 async def get_incidents(limit: int = 20):
     try:
         results = historian.collection.get(limit=limit)
         return results
-    except:
+    except Exception:
         return {"ids": []}
+
 
 @app.get("/api/capacity")
 async def get_capacity():
     return app.state.latest_forecast
+
 
 @app.websocket("/ws/pipeline/{pipeline_id}")
 async def websocket_endpoint(websocket: WebSocket, pipeline_id: str):
