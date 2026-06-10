@@ -30,7 +30,7 @@ We use **LangGraph** to manage the agents. The pipeline follows a state-machine 
 5. **Capacity & Notifier Agent**: Updates the runbook and sends the final RCA + Resolution to the frontend.
 
 **Backend Framework:** `FastAPI` (Python)
-- Serves as the API layer.
+- Serves as the API layer on port **8002**.
 - Uses WebSockets to stream the agent's thought process to the frontend in real-time.
 
 ---
@@ -41,7 +41,7 @@ The frontend will be a sleek, dark-mode **React (Vite) + TailwindCSS** applicati
 
 **Communication Flow:**
 1. **REST API**: Frontend fetches historical incidents and general stats from FastAPI endpoints (`/api/incidents`).
-2. **WebSockets (Real-time)**: Frontend connects to `ws://localhost:8000/ws`. As the LangGraph multi-agent pipeline executes, it streams events (`agent_started`, `agent_thought`, `agent_finished`) over the WebSocket.
+2. **WebSockets (Real-time)**: Frontend connects to `ws://localhost:8002/ws/pipeline/{pipeline_id}`. As the LangGraph multi-agent pipeline executes, it streams events (`agent_started`, `agent_thought`, `agent_finished`) over the WebSocket.
 3. **UI Updates**: The React UI has an `AgentPanel` component that renders these steps dynamically, giving judges the "wow" factor of seeing the agents think in real-time.
 
 ---
@@ -51,7 +51,7 @@ The frontend will be a sleek, dark-mode **React (Vite) + TailwindCSS** applicati
 **Backend Tests:**
 ```bash
 # Run the FastAPI server locally
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload --port 8002
 
 # Test the agents directly from CLI (bypassing HTTP)
 python -m tests.test_agents --mock-alert "High CPU Usage on Database"
@@ -81,24 +81,20 @@ You are an expert AI architect and Full-Stack Developer. I need to build out "MA
 Please generate the following file structure and code, step-by-step, complementing my existing `data/`, `fine_tuning/`, and `monitoring/` directories:
 
 **Phase 1: Multi-Agent Backend (Python/FastAPI)**
-1. Create `api/main.py` with a FastAPI server. Include a `/ws` WebSocket endpoint that will stream agent progress, and a POST `/api/webhook` to receive mock Prometheus alerts.
-2. Create `agents/state.py` defining a LangGraph `TypedDict` State that holds: `incident_data`, `historical_context`, `root_cause`, `resolution_plan`.
-3. Create `agents/nodes.py` with 4 functions (LangGraph nodes):
-   - `monitor_node`: Parses the incident.
-   - `historian_node`: Mocks a vector search returning past similar incidents.
-   - `rca_node`: Uses Ollama to generate a root cause analysis based on the incident and history.
-   - `resolver_node`: Uses Ollama to generate a remediation script/action.
-4. Create `agents/graph.py` that wires these nodes together using LangGraph `StateGraph`, compiles it, and includes a function that runs the graph and yields updates to the WebSocket.
+1. Create `api/main.py` with a FastAPI server. Include a `/ws/pipeline/{pipeline_id}` WebSocket endpoint that will stream agent progress, and a POST `/api/alert` to receive mock Prometheus alerts.
+2. Create `api/models.py` defining Pydantic models and a LangGraph `TypedDict` State that holds: `incident_data`, `historical_context`, `root_cause`, `resolution_plan`.
+3. Create individual agent files under `agents/` (e.g., `monitor_agent.py`, `historian_agent.py`, `rca_agent.py`, `resolver_agent.py`) with their own LLM prompts and logic.
+4. Create `agents/pipeline.py` that wires these nodes together using LangGraph `StateGraph`, compiles it, and includes a function that runs the graph and yields updates to the WebSocket.
 
 **Phase 2: Frontend Dashboard (React/Tailwind)**
 5. Scaffold a `frontend/` directory (run `npx create-vite@latest frontend --template react`).
 6. Create `frontend/src/App.jsx` with a premium dark-mode dashboard (bg-gray-900, text-white).
-7. Create a `frontend/src/components/AgentLiveFeed.jsx` component that connects to `ws://localhost:8000/ws` and visually displays the agents "thinking" step-by-step (Monitor -> Historian -> RCA -> Resolver) with green checkmarks as they complete.
+7. Create a `frontend/src/components/AgentLiveFeed.jsx` component that connects to `ws://localhost:8002/ws/pipeline/{pipeline_id}` and visually displays the agents "thinking" step-by-step (Monitor -> Historian -> RCA -> Resolver) with green checkmarks as they complete.
 8. Create a `frontend/src/components/IncidentDetails.jsx` that displays the final Root Cause and Resolution Plan formatted nicely.
 
 **Phase 3: Integration & Testing**
-9. Create `tests/simulate_incident.py` which sends a POST request to `http://localhost:8000/api/webhook` with a mock high CPU database payload to trigger the system.
-10. Update `requirements.txt` to include `fastapi`, `uvicorn`, `websockets`, `langgraph`, `langchain-community`, `pydantic`.
+9. Create `tests/simulate_incident.py` which sends a POST request to `http://localhost:8002/api/alert` with a mock high CPU database payload to trigger the system.
+10. Update `requirements.txt` to include `fastapi`, `uvicorn`, `langgraph`, `pydantic`, `openai`, `httpx`, `chromadb`, `sentence-transformers`.
 
 Ensure the backend code relies on `LLM_BASE_URL` and `LLM_MODEL_FAST` from `.env` to connect to my local Ollama instance (e.g., http://localhost:11434/v1 using OpenAI compatibility in LangChain). Let's build this!
 ```
