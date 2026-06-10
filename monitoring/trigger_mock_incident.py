@@ -47,16 +47,17 @@ PROFILES = {
     }
 }
 
+
 def trigger(incident_type: str, endpoint: str):
     profile = PROFILES.get(incident_type)
     if not profile:
         print(f"❌ Unknown incident profile '{incident_type}'. Choose from: {list(PROFILES.keys())}")
         sys.exit(1)
-        
+
     print(f"📡 Injecting incident profile: {incident_type.upper()}")
     print(f"  - Service: {profile['service']} [{profile['component']}]")
     print(f"  - Severity: {profile['severity']}")
-    
+
     payload = {
         "metrics": {
             **profile["metrics"],
@@ -65,7 +66,7 @@ def trigger(incident_type: str, endpoint: str):
             "anomaly": profile["anomaly"]
         }
     }
-    
+
     try:
         resp = requests.post(endpoint, json=payload, timeout=5)
         if resp.status_code == 200:
@@ -78,10 +79,11 @@ def trigger(incident_type: str, endpoint: str):
     except Exception as e:
         print(f"❌ Error hitting endpoint: {e}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Trigger specific E2E simulated incident profiles.")
     parser.add_argument("--type", type=str, default="database_timeout", choices=list(PROFILES.keys()), help="Type of incident profile")
-    parser.add_argument("--url", type=str, default="http://localhost:8000/api/alert", help="Backend incident alert endpoint")
-    
+    parser.add_argument("--url", type=str, default="http://localhost:8002/api/alert", help="Backend incident alert endpoint")
+
     args = parser.parse_args()
     trigger(args.type, args.url)

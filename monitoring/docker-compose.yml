@@ -1,25 +1,29 @@
 version: '3.8'
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.0
     ports: ["9090:9090"]
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     command: --config.file=/etc/prometheus/prometheus.yml
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   grafana:
-    image: grafana/grafana:latest
-    ports: ["3001:3000"]
+    image: grafana/grafana:11.2.0
+    ports: ["3000:3000"]
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=mairs2025
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-mairs2025}
     volumes:
       - grafana-data:/var/lib/grafana
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.8.0
     ports: ["9100:9100"]
 
-  # Fake service metrics generator
   mock-exporter:
     image: python:3.11-slim
     command: sh -c "pip install prometheus_client && python /app/mock_exporter.py"

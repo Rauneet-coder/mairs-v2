@@ -70,6 +70,14 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _stable_hash(s: str) -> int:
+    """Deterministic hash for reproducible behavior across Python runs."""
+    h = 0
+    for ch in s:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return h
+
+
 def make_baselines() -> dict[str, dict[str, float]]:
     baselines: dict[str, dict[str, float]] = {}
     for service in SERVICES:
@@ -131,7 +139,7 @@ def main() -> None:
                     incident_service = None
 
             # Gentle periodicity + random noise.
-            seasonal = 1.0 + 0.08 * math.sin(now / 90.0 + hash(service) % 31)
+            seasonal = 1.0 + 0.08 * math.sin(now / 90.0 + _stable_hash(service) % 31)
             rps = clamp(base["rps"] * seasonal + random.uniform(-8, 8), 5, 500)
 
             p50_ms = clamp(base["p50_ms"] * seasonal + random.uniform(-4, 6), 15, 350)
