@@ -1,9 +1,10 @@
 import json
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from api.models import AlertEvent, Severity
+
 
 class MonitorAgent:
     SYSTEM_PROMPT = """
@@ -37,7 +38,7 @@ Classification rules:
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(metrics)}
         ]
-        
+
         for attempt in range(3):
             try:
                 response = await self.llm.chat.completions.create(
@@ -47,19 +48,22 @@ Classification rules:
                     max_tokens=300
                 )
                 content = response.choices[0].message.content.strip()
-                
+
                 # Strip markdown fences
                 if content.startswith("```"):
                     content = content.split("```")[1]
                     if content.startswith("json"):
                         content = content[4:].strip()
                     content = content.strip()
-                
+
                 return json.loads(content)
-            except Exception as e:
-                if attempt == 2:
+            except Exception:
+                if attempt < 2:
+                    # Append a reminder before the next retry
                     messages.append({"role": "user", "content": "Respond ONLY with valid JSON. No markdown. No text outside the JSON object."})
-                await asyncio.sleep(1)
+                    await asyncio.sleep(1)
+                else:
+                    raise ValueError("Failed to get valid JSON from LLM after 3 attempts")
         raise ValueError("Failed to get valid JSON from LLM after 3 attempts")
 
     async def analyze(self, metrics: dict) -> AlertEvent:
@@ -71,26 +75,38 @@ Classification rules:
             component=data["component"],
             anomaly=data["anomaly"],
             business_impact=data["business_impact"],
-            triggered_at=datetime.utcnow(),
+            triggered_at=datetime.now(timezone.utc),
             raw_metrics=metrics
         )
 
     async def start_polling(self, prometheus_client, pipeline_runner, interval_seconds=15):
+        # Keep strong references to background tasks so they are not garbage-collected
+        background_tasks: set[asyncio.Task] = set()
+
         while True:
             try:
                 snapshot = await prometheus_client.get_current_metrics()
                 for service_name, metrics in snapshot.items():
                     alert = await self.analyze(metrics)
-                    
+
                     if alert.severity in [Severity.WARNING, Severity.CRITICAL]:
                         if service_name not in self.active_incidents:
                             self.active_incidents[service_name] = alert
-                            asyncio.create_task(pipeline_runner(metrics))
+                            task = asyncio.create_task(pipeline_runner(metrics))
+                            background_tasks.add(task)
+
+                            def _on_task_done(t: asyncio.Task):
+                                background_tasks.discard(t)
+                                exc = t.exception()
+                                if exc is not None:
+                                    print(f"[Monitor] Pipeline task failed for {service_name}: {exc}")
+
+                            task.add_done_callback(_on_task_done)
                     elif alert.severity == Severity.NORMAL:
                         if service_name in self.active_incidents:
                             del self.active_incidents[service_name]
-                            
+
             except Exception as e:
                 print(f"Monitor polling error: {e}")
-            
+
             await asyncio.sleep(interval_seconds)

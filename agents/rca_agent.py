@@ -1,8 +1,9 @@
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from api.models import AlertEvent, HistoricalMatch, RCAResult, CausalStep, ImpactScope
+
 
 class RCAAgent:
     SYSTEM_PROMPT = """
@@ -47,7 +48,7 @@ Rules:
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        
+
         for attempt in range(3):
             try:
                 response = await self.llm.chat.completions.create(
@@ -57,34 +58,36 @@ Rules:
                     max_tokens=1000
                 )
                 content = response.choices[0].message.content.strip()
-                
+
                 if content.startswith("```"):
                     content = content.split("```")[1]
                     if content.startswith("json"):
                         content = content[4:].strip()
                     content = content.strip()
-                
+
                 return json.loads(content)
             except Exception:
-                if attempt == 2:
+                if attempt < 2:
                     messages.append({"role": "user", "content": "Respond ONLY with valid JSON. No markdown. No text outside the JSON object."})
-                await asyncio.sleep(1)
+                    await asyncio.sleep(1)
+                else:
+                    raise ValueError("Failed to get valid JSON from LLM after 3 attempts")
         raise ValueError("Failed to get valid JSON from LLM after 3 attempts")
 
     async def analyze(self, alert: AlertEvent, matches: list[HistoricalMatch], time_series: list[dict]) -> RCAResult:
         prompt = (
             f"Current incident:\nService: {alert.service}\nComponent: {alert.component}\n"
             f"Anomaly: {alert.anomaly}\nSeverity: {alert.severity}\n\n"
-            f"Top historical matches:\n" + 
+            f"Top historical matches:\n" +
             "\n".join(f"- {m.incident_id}: {m.title} (similarity={m.similarity_score:.2f}, TTR={m.time_to_resolve_minutes}min)" for m in matches[:3]) +
             "\n\nRecent time-series (last 5 points): " + str(time_series[-5:] if time_series else [])
         )
-        
+
         data = await self._call_llm(prompt)
-        
+
         propagation = [CausalStep(**s) for s in data["propagation"]]
         impact = ImpactScope(**data["impact"])
-        
+
         return RCAResult(
             trigger=data["trigger"],
             propagation=propagation,
@@ -92,5 +95,5 @@ Rules:
             root_cause_category=data["root_cause_category"],
             confidence=data.get("confidence", 0.5),
             similar_incident_ref=data.get("similar_incident_ref"),
-            analyzed_at=datetime.utcnow()
+            analyzed_at=datetime.now(timezone.utc)
         )

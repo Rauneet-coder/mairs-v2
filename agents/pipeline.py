@@ -1,14 +1,15 @@
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from langgraph.graph import StateGraph, END, START
-from api.models import PipelineState, AgentEvent, AlertEvent
+from api.models import PipelineState, AgentEvent
+
 
 def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, notifier, ws_manager, prometheus):
-    
+
     async def _broadcast(pipeline_id, agent, status, data=None):
         if ws_manager:
-            event = AgentEvent(agent=agent, status=status, timestamp=datetime.utcnow(), data=data)
+            event = AgentEvent(agent=agent, status=status, timestamp=datetime.now(timezone.utc), data=data)
             await ws_manager.broadcast(pipeline_id, event)
 
     async def monitor_node(state: PipelineState) -> PipelineState:
@@ -18,8 +19,8 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
             alert = await monitor.analyze(state["raw_metrics"])
             state["alert_event"] = alert
             await _broadcast(pid, "monitor", "done", {
-                "severity": alert.severity.value, 
-                "service": alert.service, 
+                "severity": alert.severity.value,
+                "service": alert.service,
                 "anomaly": alert.anomaly
             })
         except Exception as e:
@@ -34,7 +35,7 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
             matches = await historian.search(state["alert_event"])
             state["historical_matches"] = matches
             await _broadcast(pid, "historian", "done", {
-                "match_count": len(matches), 
+                "match_count": len(matches),
                 "top_match": matches[0].incident_id if matches else None
             })
         except Exception as e:
@@ -50,8 +51,8 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
             result = await rca_agent.analyze(state["alert_event"], state["historical_matches"], ts)
             state["rca_result"] = result
             await _broadcast(pid, "rca", "done", {
-                "confidence": result.confidence, 
-                "propagation_steps": len(result.propagation), 
+                "confidence": result.confidence,
+                "propagation_steps": len(result.propagation),
                 "root_cause": result.trigger.get("description")
             })
         except Exception as e:
@@ -66,8 +67,8 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
             runbook = await resolver.generate(state["alert_event"], state["historical_matches"])
             state["runbook"] = runbook
             await _broadcast(pid, "resolver", "done", {
-                "steps": len(runbook.steps), 
-                "ttr": runbook.estimated_resolution_minutes, 
+                "steps": len(runbook.steps),
+                "ttr": runbook.estimated_resolution_minutes,
                 "confidence": runbook.confidence
             })
         except Exception as e:
@@ -82,8 +83,8 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
             result = await healer.execute(state["alert_event"], state["runbook"], prometheus)
             state["healing_result"] = result
             await _broadcast(pid, "healer", "done", {
-                "actions_taken": result.actions_attempted, 
-                "dry_run": result.dry_run, 
+                "actions_taken": result.actions_attempted,
+                "dry_run": result.dry_run,
                 "improvement": result.improvement_percent
             })
         except Exception as e:
@@ -97,7 +98,7 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
         try:
             slack_sent = await notifier.send(state["alert_event"], state["runbook"], state["rca_result"])
             await notifier.annotate_grafana(state["alert_event"], pid)
-            state["notification_sent"] = True
+            state["notification_sent"] = slack_sent
             await _broadcast(pid, "notifier", "done", {"slack_sent": slack_sent})
         except Exception as e:
             state["error"] = f"notifier: {str(e)}"
@@ -105,14 +106,18 @@ def create_pipeline(monitor, historian, rca_agent, resolver, healer, capacity, n
         return state
 
     def route_after_monitor(state: PipelineState) -> str:
-        if state.get("error"): return END
+        if state.get("error"):
+            return END
         if state["alert_event"] and state["alert_event"].severity.value in ["WARNING", "CRITICAL"]:
             return "historian"
         return END
 
     def route_after_resolver(state: PipelineState) -> str:
-        if state.get("error"): return "notifier"
-        if state["alert_event"] and state["alert_event"].severity.value == "WARNING":
+        if state.get("error"):
+            return "notifier"
+        # Route both WARNING and CRITICAL through the healer.
+        # The healer will skip unsafe actions based on severity.
+        if state["alert_event"] and state["alert_event"].severity.value in ["WARNING", "CRITICAL"]:
             return "healer"
         return "notifier"
 

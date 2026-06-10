@@ -1,8 +1,10 @@
 import os
 import json
+import asyncio
 import chromadb
 from sentence_transformers import SentenceTransformer
 from api.models import AlertEvent, HistoricalMatch
+
 
 class HistorianAgent:
     def __init__(self, chroma_path: str = None):
@@ -11,30 +13,30 @@ class HistorianAgent:
         self.collection = self.client.get_or_create_collection("incidents")
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    async def search(self, alert: AlertEvent, top_k: int = 5) -> list[HistoricalMatch]:
+    def _search_sync(self, alert: AlertEvent, top_k: int) -> list[HistoricalMatch]:
         query = f"{alert.service} {alert.component} {alert.anomaly}"
         embedding = self.model.encode(query).tolist()
-        
+
         results = self.collection.query(
             query_embeddings=[embedding],
             n_results=top_k,
             include=["metadatas", "distances"]
         )
-        
+
         matches = []
         for i in range(len(results["ids"][0])):
             distance = results["distances"][0][i]
             meta = results["metadatas"][0][i]
-            
+
             similarity = max(0.0, 1.0 - (distance / 2.0))
             if similarity < 0.25:
                 continue
-                
+
             res_steps = meta["resolution_steps"]
             if isinstance(res_steps, str):
                 try:
                     res_steps = json.loads(res_steps)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     res_steps = [res_steps]
 
             match = HistoricalMatch(
@@ -48,10 +50,15 @@ class HistorianAgent:
                 similarity_score=float(similarity)
             )
             matches.append(match)
-            
+
         return sorted(matches, key=lambda x: x.similarity_score, reverse=True)
 
-    async def ingest_resolved(self, incident: dict):
+    async def search(self, alert: AlertEvent, top_k: int = 5) -> list[HistoricalMatch]:
+        # Offload blocking ChromaDB + sentence-transformers I/O to a thread pool
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._search_sync, alert, top_k)
+
+    def _ingest_sync(self, incident: dict):
         doc = f"{incident['title']}. {incident['description']}. Root cause: {incident['root_cause']}"
         embedding = self.model.encode(doc).tolist()
         metadata = {k: str(v) if isinstance(v, (list, dict, bool)) else v for k, v in incident.items()}
@@ -61,3 +68,7 @@ class HistorianAgent:
             metadatas=[metadata],
             ids=[incident["id"]]
         )
+
+    async def ingest_resolved(self, incident: dict):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._ingest_sync, incident)

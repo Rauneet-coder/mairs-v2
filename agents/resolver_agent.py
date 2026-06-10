@@ -1,8 +1,9 @@
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from api.models import AlertEvent, HistoricalMatch, Runbook, RunbookStep
+
 
 class ResolverAgent:
     SYSTEM_PROMPT = """
@@ -14,7 +15,7 @@ Respond ONLY as valid JSON. No markdown.
     {
       "step": 1,
       "action": "Check database connection pool utilization",
-      "command": "psql -c 'SELECT count(*) FROM pg_stat_activity;'",
+      "command": "psql -c 'SELECT count(*) FROM pg_stat_activity;\"'",
       "duration_minutes": 1,
       "historical_ref": "INC-2024-023",
       "auto_executable": false
@@ -43,7 +44,7 @@ Rules:
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        
+
         for attempt in range(3):
             try:
                 response = await self.llm.chat.completions.create(
@@ -53,18 +54,20 @@ Rules:
                     max_tokens=1000
                 )
                 content = response.choices[0].message.content.strip()
-                
+
                 if content.startswith("```"):
                     content = content.split("```")[1]
                     if content.startswith("json"):
                         content = content[4:].strip()
                     content = content.strip()
-                
+
                 return json.loads(content)
             except Exception:
-                if attempt == 2:
+                if attempt < 2:
                     messages.append({"role": "user", "content": "Respond ONLY with valid JSON. No markdown. No text outside the JSON object."})
-                await asyncio.sleep(1)
+                    await asyncio.sleep(1)
+                else:
+                    raise ValueError("Failed to get valid JSON from LLM after 3 attempts")
         raise ValueError("Failed to get valid JSON from LLM after 3 attempts")
 
     async def generate(self, alert: AlertEvent, matches: list[HistoricalMatch]) -> Runbook:
@@ -73,20 +76,23 @@ Rules:
             avg_ttr = sum(m.time_to_resolve_minutes for m in matches[:2]) // 2
         elif matches:
             avg_ttr = matches[0].time_to_resolve_minutes
-            
+
         prompt = (
             f"Current incident:\nService: {alert.service}\nComponent: {alert.component}\nAnomaly: {alert.anomaly}\n\n"
-            f"Top historical matches:\n" + 
-            "\n".join(f"- {m.incident_id}: {m.title}\n  Root cause: {m.root_cause}\n  Steps: {m.resolution_steps[:2]}" for m in matches[:3])
+            f"Top historical matches:\n" +
+            "\n".join(
+                f"- {m.incident_id}: {m.title}\n  Root cause: {m.root_cause}\n  Steps: {', '.join(str(s) for s in m.resolution_steps[:2])}"
+                for m in matches[:3]
+            )
         )
-        
+
         data = await self._call_llm(prompt)
-        
+
         steps = [RunbookStep(**s) for s in data["steps"]]
-        
+
         return Runbook(
             steps=steps,
             estimated_resolution_minutes=data.get("estimated_resolution_minutes", avg_ttr),
             confidence=data.get("confidence", 0.5),
-            generated_at=datetime.utcnow()
+            generated_at=datetime.now(timezone.utc)
         )
