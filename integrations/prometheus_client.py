@@ -40,7 +40,7 @@ class PrometheusClient:
         )
         queries = {
             "error_rate_percent": f"error_rate_percent{service_filter}",
-            "http_request_duration_seconds_p99": (
+            "latency_p99_ms": (
                 f"http_request_duration_seconds{latency_filter}"
             ),
             "cpu_utilization_percent": f"cpu_utilization_percent{service_filter}",
@@ -60,14 +60,20 @@ class PrometheusClient:
                         if service_name is None or len(value_pair) < 2:
                             continue
                         try:
-                            value = float(value_pair[1])
+                            raw_value = float(value_pair[1])
                         except (TypeError, ValueError):
                             continue
+
+                        # Convert latency from seconds to milliseconds
+                        if metric_name == "latency_p99_ms":
+                            value = raw_value * 1000.0
+                        else:
+                            value = raw_value
 
                         if service_name not in snapshots:
                             snapshots[service_name] = {}
                         snapshots[service_name][metric_name] = value
-        except httpx.RequestError as exc:
+        except httpx.HTTPError as exc:
             import random
             print(f"⚠️ Prometheus query failed ({exc}), returning fallback metric snapshot.")
             services = ["payments-api", "auth-service", "database-primary", "database-replica", "cache-layer"]
@@ -75,7 +81,7 @@ class PrometheusClient:
             for s in services:
                 snapshots[s] = {
                     "error_rate_percent": random.uniform(0.01, 0.45),
-                    "http_request_duration_seconds_p99": random.uniform(0.05, 0.35),
+                    "latency_p99_ms": random.uniform(50.0, 810.0),
                     "cpu_utilization_percent": random.uniform(15.0, 48.0),
                     "memory_utilization_percent": random.uniform(25.0, 58.0),
                     "service_up": 1.0
@@ -100,7 +106,14 @@ class PrometheusClient:
 
         end_ts = int(time.time())
         start_ts = end_ts - int(hours * 3600)
-        query = f'{metric}{{service="{service}"}}'
+
+        # Map internal metric names to Prometheus queries
+        if metric == "latency_p99_ms":
+            query = f'http_request_duration_seconds{{service="{service}",quantile="0.99"}}'
+        elif metric == "active_connections":
+            query = f'active_connections{{service="{service}"}}'
+        else:
+            query = f'{metric}{{service="{service}"}}'
 
         try:
             async with httpx.AsyncClient() as client:
@@ -128,11 +141,15 @@ class PrometheusClient:
             series: list[dict[str, float]] = []
             for timestamp, value in points:
                 try:
-                    series.append({"timestamp": float(timestamp), "value": float(value)})
+                    raw_value = float(value)
+                    # Convert latency from seconds to milliseconds if needed
+                    if metric == "latency_p99_ms":
+                        raw_value = raw_value * 1000.0
+                    series.append({"timestamp": float(timestamp), "value": raw_value})
                 except (TypeError, ValueError):
                     continue
             return series
-        except httpx.RequestError as exc:
+        except httpx.HTTPError as exc:
             import random
             print(f"⚠️ Prometheus query failed ({exc}), falling back to synthetic time-series data.")
             now = time.time()
