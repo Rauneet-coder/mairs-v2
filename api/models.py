@@ -1,6 +1,6 @@
 from __future__ import annotations
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Literal, TypedDict, Optional
 from pydantic import BaseModel, Field
@@ -17,7 +17,7 @@ class AlertEvent(BaseModel):
     component: str
     anomaly: str
     business_impact: Literal["low", "medium", "high"]
-    triggered_at: datetime = Field(default_factory=datetime.utcnow)
+    triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     raw_metrics: dict
 
 class HistoricalMatch(BaseModel):
@@ -42,7 +42,7 @@ class Runbook(BaseModel):
     steps: list[RunbookStep]
     estimated_resolution_minutes: int
     confidence: float
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class CausalStep(BaseModel):
     step: int
@@ -62,7 +62,7 @@ class RCAResult(BaseModel):
     root_cause_category: str
     confidence: float
     similar_incident_ref: str | None = None
-    analyzed_at: datetime = Field(default_factory=datetime.utcnow)
+    analyzed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class HealingAction(BaseModel):
     action: str
@@ -94,12 +94,12 @@ class CapacityForecast(BaseModel):
 class CapacityReport(BaseModel):
     forecasts: list[CapacityForecast]
     analysis_window_hours: int = 168
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class AgentEvent(BaseModel):
     agent: str
     status: Literal["running", "done", "error"]
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     data: dict | None = None
 
 class PipelineState(TypedDict):
